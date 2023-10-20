@@ -9,9 +9,8 @@ The objective of this assignment is to predict for diabetes (gh >= 6.5%). This w
 
 
 ```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
 
-# Set working directory
-knitr::opts_chunk$set(include = FALSE)
 # knitr::opts_knit$set(root.dir = 'C:/Users/Dramor/OneDrive - Nanyang Technological University/MIMIC-IV/mimic-iv-clinical-database-demo-2.2/icu')
 
 # Define a relative path to a file or directory
@@ -23,27 +22,15 @@ image_path <- file.path('Images','data_dictionary.png')
 library(tidyverse)
 library(ggplot2)
 library(DBI)
-
-
+library(naniar)
+library(GGally)
+library(reshape2)
 
 
 # Setting global seed for reproducibility
 set.seed(777)
 
 ```
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 ![Data dictionary](`r image_path`)
@@ -58,7 +45,7 @@ The rationale behind the usage of features provided will be explained below:
   
   re: Genetic factors differ greatly between individuals of different ethnicities. Although not a substitute for diabetes-associated genes, this feature should provide some information to distinguish affected and non-affected individuals.
   
-  income: Income levels influence a person's diet and behavior. The income provided here is family income, which is not preferable as the individual in this dataset may not be the financial decision maker in the household. Alternatively, family income could be high, but money may not be distributed among the family unit. Hence the use of income in this analysis may become problematic. Individual income levels should provide better information about an individual's lifestyle. As it stands, income will not be used in this analysis.
+  income: Income levels influence a person's diet and behavior. The income provided here is family income, which is not preferable as the individual in this dataset may not be the financial decision maker in the household. Alternatively, family income could be high, but money may not be distributed among the family unit. Hence the use of income in this analysis may become problematic. Individual income levels should provide better information about an individual's lifestyle. One possible idea is to have models with and without income.
   
   tx, dx: The inclusion of these features in this dataset is interesting. The presence of medication or a diagnosis related to diabetes should be the strongest predictor for Type II diabetes. 
   
@@ -77,22 +64,18 @@ The rationale behind the usage of features provided will be explained below:
 
 
 
-Despite being a small dataset, it will be transformed into a SQLite database to showcase SQL skills. I will try to do most manipulations in SQL before using R. 
+Despite being a small dataset, it will be transformed into a SQLite database to showcase SQL skills. I will try to do most manipulations in SQL to reduce the size of the dataframe (if necessary) before loading it into memory.
 
-- bmi will be dropped
-- number of entries with atleast one NA in the row will be counted
-- 
-
-
-```{r}
+```{r eval = TRUE, echo=TRUE}
 # Loading of data.
-df <- read_tsv(relative_path)
+df <- read_tsv(relative_path,
+               show_col_types = FALSE)
 
 # Open a SQLite connection.
 conn <- dbConnect(RSQLite::SQLite(), dbname = 'diabetes.db')
 
-dbRemoveTable(conn,'diabetes_data')
-dbRemoveTable(conn,'diabetes_data_modified')
+# dbRemoveTable(conn,'diabetes_data')
+# dbRemoveTable(conn,'diabetes_data_modified')
 
 # Create a new table within the database.
 dbWriteTable(conn,
@@ -100,6 +83,96 @@ dbWriteTable(conn,
              value = df,
              overwrite = TRUE)
 
+```
+
+```{r eval = TRUE, echo=TRUE}
+# Analyze the whole dataset first.
+query <- 'SELECT * FROM diabetes_data'
+df <- dbGetQuery(conn, query)
+
+na_plot <- vis_miss(df)
+print(na_plot)
+```
+A visual representation of NAs is preferable to looking at NA counts in the data dictionary. The majority of NAs come from the sub column, at 14% while other anthropometric columns range from 3-7% missingness. income and kidney damage-related columns also contain small amounts of NA. One solution is to drop all rows that have atleast one NA in them. We first need to count the number of rows that fit this criteria, and the amount of data that we'll lose.
+
+```{r eval = TRUE, echo=TRUE}
+# Count the number of entries.
+query <- "SELECT COUNT(*) FROM diabetes_data"
+
+initial_row_count <- dbGetQuery(conn, query)
+
+print(paste('Initial row count:', initial_row_count))
+
+# Count number of entries with atleast one NA in them.
+query <- "SELECT COUNT(*) FROM diabetes_data WHERE income iS NULL OR leg IS NULL OR arml IS NULL OR armc IS NULL OR waist IS NULL OR tri IS NULL OR sub IS NULL OR albumin IS NULL OR bun IS NULL OR Scr IS NULL"
+
+row_count_no_NA <- dbGetQuery(conn, query)
+
+print(paste('Rows with atleast one NA:', row_count_no_NA))
+
+# Calculate the amount of data lost.
+print(paste('Percent data lost: ', round(row_count_no_NA/initial_row_count*100), '%', sep = ''))
+```
+21% of data will be lost if we were to take this approach. But after removal there would still be >5000 unique rows of patient data available. The amount of data required is specific to each problem and more complex problems or algorithms used would require more data. 
+My opinion is that >5000 rows of data is still sufficient to build a model for diabetes prediction, and the current dataset satisfies the rule of thumb where the number of data points should be at least 10x the number of features. 
+
+However, to further showcase my skills I will perform imputation using KNN. The idea is that NAs will be replaced with the mean value from the n nearest neighbors found in the training dataset. More exploratory data analysis will be done, and the results of imputation will be compared with the original exploratory data analysis.
+
+```{r eerfqwf, echo=TRUE}
+# Obtain continuous variables.
+query <- 'SELECT age, wt, ht, bmi, leg, arml, armc, waist, tri, sub, gh, albumin, bun, SCr FROM diabetes_data'
+continuous_df <- dbGetQuery(conn, query)
+
+# Transform into a two col dataframe of variables and values. This is necessary for facet_wrap().
+continuous_df_long <- melt(continuous_df)
+
+# For each variable, plot a violin+boxplot.
+continuous_plot <- ggplot(continuous_df_long, aes(x = variable, y = value)) + 
+  geom_violin(width = 1) +
+  geom_boxplot(width = 0.5) +
+  facet_wrap(~ variable, scales = "free") +
+  theme_classic()
+
+continuous_plot
+summary(continuous_df)
+
+```
+From the boxplots and summary table, there appears to be individuals aged below 20 in the dataset. Although more younger people are developing diabetes, people usually develop diabetes when they hit the age of 45 (https://www.cdc.gov/diabetes/basics/type2.html). Therefore, there would not be much of a point to include people who are too young in the dataset as it might introduce more noise. 
+
+An interesting observation is the subset of morbidly obese individuals in the dataset. This is described by the wt and bmi features, along with features describing body shape such as waist and armc. These individuals have measurements beyond the upper whiskers and would potentially be outliers, but after some googling these measurements are still within the realm of possibility. I suspect these individuals are also the ones with the abnormally high gh value, but more analysis will have to take place before that conclusion can be drawn.
+
+This is the phase where I would determine if outliers are within reason. Human errors made during data entry can sometimes form outliers so a reality check, and sometimes consulting a clinician may be necessary. But apart from the presence of young individuals and the morbidly obese subset, there appears to be nothing strange here. 
+
+The warning shown in the output is due to the removal of a total of 2556 NA values, which cannot be plotted. 2556 is the total number of NA values here, and not the total rows containing atleast one NA value.  
+
+```{r}
+# Obtain categorical variables.
+query <- 'SELECT sex, re, income, tx, dx FROM diabetes_data'
+categorical_df <- dbGetQuery(conn, query)
+
+# Create bar plots 
+for (i in colnames(categorical_df)) {
+  if (i == 'income') {
+    p <- ggplot(categorical_df, ) +
+    geom_bar(aes_string(x = i)) +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+    theme_classic()
+  print(p)
+  } 
+  else {
+  p <- ggplot(categorical_df, ) +
+    geom_bar(aes_string(x = i)) +
+    theme_classic()
+  print(p)
+  }
+}
+```
+
+
+Interpretation!
+
+
+```{r eval=FALSE, include=FALSE}
 # Create a copy of the table for my own modifications.
 query <- "CREATE TABLE diabetes_data_modified AS SELECT * FROM diabetes_data"
 dbExecute(conn, query)
@@ -108,23 +181,11 @@ dbExecute(conn, query)
 query <- "ALTER TABLE diabetes_data_modified DROP COLUMN bmi;"
 dbExecute(conn, query)
 
-# Count the number of entries 
-query <- "SELECT COUNT(*) FROM diabetes_data_modified"
-print(paste('current entries:', dbGetQuery(conn, query)))
-
-# Count number of entries with atleast one NA in them.
-query <- "SELECT COUNT(*) FROM diabetes_data_modified WHERE income iS NULL OR leg IS NULL OR arml IS NULL OR armc IS NULL OR waist IS NULL OR tri IS NULL OR sub IS NULL OR albumin IS NULL OR bun IS NULL OR Scr IS NULL;"
-print(paste('number of entries with atleast one NA', dbGetQuery(conn, query)))
-
-
-
-
-
 
 ### Check cols
-query <- "PRAGMA table_info(diabetes_data_modified);"
-column_info <- dbGetQuery(conn, query)
-print(column_info)
+# query <- "PRAGMA table_info(diabetes_data_modified);"
+# column_info <- dbGetQuery(conn, query)
+# print(column_info)
 ###
 
 
@@ -135,7 +196,6 @@ tables <- dbListTables(conn)
 # Print the list of tables
 cat("Tables in the database:\n")
 cat(tables, sep = "\n")
-
 
 ```
 
