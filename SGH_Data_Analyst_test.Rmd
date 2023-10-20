@@ -5,21 +5,141 @@ date: "2023-10-20"
 output: html_document
 ---
 
+The objective of this assignment is to predict for diabetes (gh >= 6.5%). This will be performed using 3 machine learning models - logistic regression, decision tree and random forest. 
+
+
 ```{r setup, include=FALSE}
 
 # Set working directory
 knitr::opts_chunk$set(include = FALSE)
-knitr::opts_knit$set(root.dir = 'C:/Users/Dramor/OneDrive - Nanyang Technological University/MIMIC-IV/mimic-iv-clinical-database-demo-2.2/icu')
+# knitr::opts_knit$set(root.dir = 'C:/Users/Dramor/OneDrive - Nanyang Technological University/MIMIC-IV/mimic-iv-clinical-database-demo-2.2/icu')
+
+# Define a relative path to a file or directory
+relative_path <- file.path('Data', 'nhgh.tsv')
+image_path <- file.path('Images','data_dictionary.png')
+
 
 # Load packages
 library(tidyverse)
 library(ggplot2)
+library(DBI)
+
+
 
 
 # Setting global seed for reproducibility
 set.seed(777)
 
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+![Data dictionary](`r image_path`)
+
+There are two forms of diabetes - Type I and Type II. Type I is often due to genetic issues that causes the pancreas to stop producing insulin. Type II is more common worldwide, and is characterized by the downregulated production of insulin or cells in the body become unresponsive to insulin. Both lead to the inability of cells to uptake glucose, resulting in high glucose concentrations in the blood.
+
+The exact mechanistic cause has Type II diabetes has yet to be pinned down. Despite this, it is associated with factors such as diet, obesity, age, genetics, and sex. By looking at these features of an individual, a machine-learning model may be constructed to predict if someone has Type II diabetes. 
+
+The rationale behind the usage of features provided will be explained below:
+
+  sex, age: Known to be associated with Type II diabetes, both will be used.
+  
+  re: Genetic factors differ greatly between individuals of different ethnicities. Although not a substitute for diabetes-associated genes, this feature should provide some information to distinguish affected and non-affected individuals.
+  
+  income: Income levels influence a person's diet and behavior. The income provided here is family income, which is not preferable as the individual in this dataset may not be the financial decision maker in the household. Alternatively, family income could be high, but money may not be distributed among the family unit. Hence the use of income in this analysis may become problematic. Individual income levels should provide better information about an individual's lifestyle. As it stands, income will not be used in this analysis.
+  
+  tx, dx: The inclusion of these features in this dataset is interesting. The presence of medication or a diagnosis related to diabetes should be the strongest predictor for Type II diabetes. 
+  
+  wt, ht, bmi: bmi already takes into account both the weight and height features, but there could be a relationship between height and other anthropometric data below. bmi will be excluded while wt and ht will be used. 
+  
+  leg, arml: Studies were performed in the past to suggest that limb measurements could play a role in diabetes prediction. Limb lengths are indicators of an individual's diet during childhood and limb to body proportions could have effects on diabetes susceptibility. (https://www.cambridge.org/core/services/aop-cambridge-core/content/view/F48929D1213F5C8457CF8BF599F62047/S1368980022001215a.pdf/upper_arm_length_and_knee_height_are_associated_with_diabetes_in_the_middleaged_and_elderly_evidence_from_the_china_health_and_retirement_longitudinal_study.pdf)
+  
+  armc, waist, tri, sub: anthropometric data can be used to determine body shapes and proportions. There is literature on all of these features and their association with Type II diabetes. All will be used. 
+  
+  Some studies have reported that waist-to-height ratio is a strong predictor for diabetes. (https://bmcpublichealth.biomedcentral.com/articles/10.1186/s12889-019-7801-2#:~:text=Anthropometric%20measures%20including%20waist%20circumference,risk%20of%20diabetes%20and%20hypertension.) Subscapular skinfold was also found to be associated with Type II diabetes in a Peruvian population. (https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6960014/)
+  
+  gh: Glycohaemoglobin is a clinical marker for blood glucose levels. This what we are predicting for, and will be transformed to a categorical variable such that gh >= 6.5% is 1 while gh < 6.5%  is 0.
+  
+  albumin, bun, SCr: These are indicators of kidney function and damage. Elevated levels of albumin, blood urea nitrogen and creatinine are associated with kidney damage, and kidney damage is associated with uncontrolled diabetes.
+
+
+
+
+Despite being a small dataset, it will be transformed into a SQLite database to showcase SQL skills. I will try to do most manipulations in SQL before using R. 
+
+- bmi will be dropped
+- number of entries with atleast one NA in the row will be counted
+- 
+
+
+```{r}
+# Loading of data.
+df <- read_tsv(relative_path)
+
+# Open a SQLite connection.
+conn <- dbConnect(RSQLite::SQLite(), dbname = 'diabetes.db')
+
+dbRemoveTable(conn,'diabetes_data')
+dbRemoveTable(conn,'diabetes_data_modified')
+
+# Create a new table within the database.
+dbWriteTable(conn,
+             name = 'diabetes_data',
+             value = df,
+             overwrite = TRUE)
+
+# Create a copy of the table for my own modifications.
+query <- "CREATE TABLE diabetes_data_modified AS SELECT * FROM diabetes_data"
+dbExecute(conn, query)
+
+# Remove BMI column in copied table.
+query <- "ALTER TABLE diabetes_data_modified DROP COLUMN bmi;"
+dbExecute(conn, query)
+
+# Count the number of entries 
+query <- "SELECT COUNT(*) FROM diabetes_data_modified"
+print(paste('current entries:', dbGetQuery(conn, query)))
+
+# Count number of entries with atleast one NA in them.
+query <- "SELECT COUNT(*) FROM diabetes_data_modified WHERE income iS NULL OR leg IS NULL OR arml IS NULL OR armc IS NULL OR waist IS NULL OR tri IS NULL OR sub IS NULL OR albumin IS NULL OR bun IS NULL OR Scr IS NULL;"
+print(paste('number of entries with atleast one NA', dbGetQuery(conn, query)))
+
+
+
+
+
+
+### Check cols
+query <- "PRAGMA table_info(diabetes_data_modified);"
+column_info <- dbGetQuery(conn, query)
+print(column_info)
+###
+
+
+
+# List all tables in the database
+tables <- dbListTables(conn)
+
+# Print the list of tables
+cat("Tables in the database:\n")
+cat(tables, sep = "\n")
 
 
 ```
+
+
+
+
 
