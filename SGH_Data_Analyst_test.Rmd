@@ -1,0 +1,25 @@
+---
+title: "SGH Data Analyst test"
+author: "Tan Wei Zhi"
+date: "2023-10-20"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+
+# Set working directory
+knitr::opts_chunk$set(include = FALSE)
+knitr::opts_knit$set(root.dir = 'C:/Users/Dramor/OneDrive - Nanyang Technological University/MIMIC-IV/mimic-iv-clinical-database-demo-2.2/icu')
+
+# Load packages
+library(tidyverse)
+library(ggplot2)
+
+
+# Setting global seed for reproducibility
+set.seed(777)
+
+
+
+```
+
