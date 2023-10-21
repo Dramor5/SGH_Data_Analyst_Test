@@ -25,7 +25,7 @@ library(DBI)
 library(naniar)
 library(GGally)
 library(reshape2)
-
+library(data.table)
 
 # Setting global seed for reproducibility
 set.seed(777)
@@ -45,7 +45,7 @@ The rationale behind the usage of features provided will be explained below:
   
   re: Genetic factors differ greatly between individuals of different ethnicities. Although not a substitute for diabetes-associated genes, this feature should provide some information to distinguish affected and non-affected individuals.
   
-  income: Income levels influence a person's diet and behavior. The income provided here is family income, which is not preferable as the individual in this dataset may not be the financial decision maker in the household. Alternatively, family income could be high, but money may not be distributed among the family unit. Hence the use of income in this analysis may become problematic. Individual income levels should provide better information about an individual's lifestyle. One possible idea is to have models with and without income.
+  income: Income levels influence a person's diet and behavior. The income provided here is family income, which is not preferable as the individual in this dataset may not be the financial decision maker in the household. Alternatively, family income could be high, but money may not be distributed among the family unit. Hence the use of income in this analysis may become problematic, it will be analyzed, but it will have less priority as a feature in the machine learning model.
   
   tx, dx: The inclusion of these features in this dataset is interesting. The presence of medication or a diagnosis related to diabetes should be the strongest predictor for Type II diabetes. 
   
@@ -146,30 +146,187 @@ This is the phase where I would determine if outliers are within reason. Human e
 The warning shown in the output is due to the removal of a total of 2556 NA values, which cannot be plotted. 2556 is the total number of NA values here, and not the total rows containing atleast one NA value.  
 
 ```{r}
-# Obtain categorical variables.
-query <- 'SELECT sex, re, income, tx, dx FROM diabetes_data'
+# Obtain categorical variables and gh.
+query <- 'SELECT sex, re, income, tx, dx, gh FROM diabetes_data'
 categorical_df <- dbGetQuery(conn, query)
+
+# Transform gh to categorical variable.
+categorical_df <- categorical_df %>%
+  mutate(gh = case_when(gh >= 6.5 ~ T,
+                        T ~ c(F)))
 
 # Create bar plots 
 for (i in colnames(categorical_df)) {
   if (i == 'income') {
-    p <- ggplot(categorical_df, ) +
+    p <- ggplot(categorical_df) +
     geom_bar(aes_string(x = i)) +
-    theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
-    theme_classic()
+    theme_classic() +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1))
   print(p)
   } 
   else {
-  p <- ggplot(categorical_df, ) +
+  p <- ggplot(categorical_df) +
     geom_bar(aes_string(x = i)) +
     theme_classic()
   print(p)
   }
 }
+
+# Transform into long format, for all categories, count all values observed.
+altered_pie_df <- categorical_df %>%
+  gather(key = 'category') %>%
+  count(category, value) %>%
+  mutate(perc_n = round(n/nrow(categorical_df)*100, 2))
+
+# Create pie charts for every categorical variable.
+for (i in unique(altered_pie_df$category)) {
+  p <- altered_pie_df[altered_pie_df$category == i, ] %>%
+  ggplot(aes(x="", y=n, fill=value)) +
+    geom_col(color = 'black') + 
+    geom_text(aes(label = paste(perc_n, '%')),
+            position = position_stack(vjust = 0.5)) +
+    coord_polar("y", start=0) +
+    theme_void() +
+    ggtitle(paste(i)) + 
+    theme(plot.title = element_text(hjust = 0.5))
+    
+  print(p)
+}
+```
+The bar plots visually depict count values for comparison, but the pie charts are more useful when it comes to looking at proportion. Unfortunately the pie chart for income has too many categories, causing labels to overlap. 
+
+Interestingly, the number of diagnoses outnumber the number of people with diabetes. Could this be a misdiagnosis by the physician or was a lower gh threshold used to diagnose them? The use of the dx feature in the model may add some false-positives according to our criteria but should still be useful as their proportions are very similar. Of course, this is assuming the dx and diabetes statuses have a significant correlation. Following the same logic, tx should be a better predictor - the difference in gh and tx proportions are minimal.
+
+At this point I'm unsure if the other features are as valuable, we would have to look for correlations with diabetes to determine this.
+
+We move on to correlation visualizations to investigate if any features are correlated with diabetes. 
+
+```{r}
+# Load data.
+query <- 'SELECT age, wt, ht, bmi, leg, arml, armc, waist, tri, sub, gh, albumin, bun, SCr FROM diabetes_data'
+continuous_df <- dbGetQuery(conn, query)
+
+# Construct paired geom_point graphs with different features. 
+continuous_df <- continuous_df %>%
+  na.omit() %>%
+  mutate(diabetes = case_when(gh >= 6.5 ~ 1,
+                              T ~ 0))
+
+pair_graphs <- ggpairs(continuous_df, aes(col = diabetes),
+        progress = F, 
+        lower = list(continuous = "points"),
+        upper = list(continuous = "blank"),
+        diag = list(continuous = "blankDiag"),
+        axisLabels = 'none')
+
+pair_graphs
+
+```
+The light blue refers to diabetic patients, while dark blue refers to non-diabetic patients. Unfortunately, there is no discernable relationship between gh and any of the variables. In the age vs gh graph, it appears the threshold for diabetes has somehow dropped, but this is likely due to overplotting. In all other graphs with age as the x-axis, the diabetic population seems to form towards the right of the graph. A possible method to make the dataset balanced would be to filter for older individuals. 
+
+There were positive relationships between anthropometric variables such as ht and leg, wt and bmi but these are not very helpful. 
+
+```{r}
+# Plot all continous variables against gh.
+for (i in colnames(continuous_df)) {
+  p <- ggplot(continuous_df) +
+    geom_point(aes_string(x = i, y = 'gh', col = 'diabetes')) + 
+    theme_classic()
+  print(p)
+}
 ```
 
+Taking a closer look at the graph of features against gh reveals that age, bmi, armc, waist may be good predictors of diabetes, since the diabetics are always concentrated along a certain region of the x-axis. Apart from looking purely at graphs we can do a t-test between the means of different features, in diabetics and non-diabetics to check for significance. This will be done with a two-sample test with significance level at p = 0.05.
 
-Interpretation!
+```{r}
+# Open a new list for result collection
+t_test_df <- list()
+
+# For all continuous variables except the diabetes columns, do a t-test of means between diabetics and non-diabetics. 
+for (i in colnames(continuous_df)[1:length(colnames(continuous_df)) - 1]) {
+  
+  # Perform the t-test.
+  t_res <- t.test(continuous_df[continuous_df$diabetes == 1, colnames(continuous_df) == i],
+                  continuous_df[continuous_df$diabetes == 0, colnames(continuous_df) == i])
+  
+  # Collect results into a list.
+  entry <- list('col_name' = i,
+                'p_value' = t_res$p.value,
+                'diabetic_mean' = round(t_res$estimate[[1]],2),
+                'non_diabetic_mean' = round(t_res$estimate[[2]], 2))
+              
+  # Add the entry into a list.  
+  t_test_df[[i]] <- entry
+}
+
+# R-bind all lists to form a dataframe.
+t_test_df <- rbindlist(t_test_df) %>%
+  arrange(p_value) %>%
+  mutate(significant = case_when(p_value < 0.05 ~ T,
+                                 T ~ F))
+
+t_test_df
+
+```
+The t-test shows p-values in comparisons of feature means between diabetics and non-diabetics. If we were to select for features, we would pick from the top, with the lowest p-value and move downwards.
+
+I will do the same with categorical variables, using the chi-squared test of independence. 
+
+```{r}
+# Obtain categorical variables and gh.
+query <- 'SELECT sex, re, income, tx, dx, gh FROM diabetes_data'
+categorical_df <- dbGetQuery(conn, query) %>%
+  mutate(diabetes = case_when(gh >= 6.5 ~ T,
+                              T ~ F)) %>%
+  select(-gh)
+
+# Initialize empty list.
+chi_sq_df <- list()
+
+# For all columns except the diabetes marker, perform chi square test. 
+# Determine if variable in question is significantly associated with diabetes.
+for (i in colnames(categorical_df)[1:length(colnames(categorical_df)) - 1]) {
+  
+  # Construct contingency table, perform chi square test. 
+  cont_table <- table(categorical_df[[i]], categorical_df$diabetes)
+  chi_squared_result <- chisq.test(cont_table)
+  
+  # Store result in a list.
+  entry <- list('col_name' = i,
+                'chi-sq_stat' = chi_squared_result$statistic,
+                'p_value' = chi_squared_result$p.value)
+  
+  chi_sq_df[[i]] <- entry
+}
+
+chi_sq_df <- rbindlist(chi_sq_df) %>%
+  arrange(p_value) %>%
+  mutate(significant = case_when(p_value < 0.05 ~ T,
+                                 T ~ F))
+
+chi_sq_df
+
+
+```
+As expected, there is a high correlation between tx, dx and diabetes. Since all the variables in this dataset are all somehow contributing to diabetes, there were significant differences between means of the continuous variables in diabetics and non-diabetics. All categorical variables were also correlated to diabetes. Feature selection is still important to reduce the dimensionality in data to create a more effective model. 
+
+tx, dx, age (after removing below 20), bmi (since it tell us the most information about a person's body shape, and is also correlated with several other features.)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 ```{r eval=FALSE, include=FALSE}
