@@ -26,6 +26,9 @@ library(naniar)
 library(GGally)
 library(reshape2)
 library(data.table)
+library(pheatmap)
+library(vcd)
+library(ggvenn)
 
 # Setting global seed for reproducibility
 set.seed(777)
@@ -152,8 +155,8 @@ categorical_df <- dbGetQuery(conn, query)
 
 # Transform gh to categorical variable.
 categorical_df <- categorical_df %>%
-  mutate(gh = case_when(gh >= 6.5 ~ T,
-                        T ~ c(F)))
+  mutate(gh = case_when(gh >= 6.5 ~ 1,
+                        T ~ c(0)))
 
 # Create bar plots 
 for (i in colnames(categorical_df)) {
@@ -195,11 +198,41 @@ for (i in unique(altered_pie_df$category)) {
 ```
 The bar plots visually depict count values for comparison, but the pie charts are more useful when it comes to looking at proportion. Unfortunately the pie chart for income has too many categories, causing labels to overlap. 
 
-Interestingly, the number of diagnoses outnumber the number of people with diabetes. Could this be a misdiagnosis by the physician or was a lower gh threshold used to diagnose them? The use of the dx feature in the model may add some false-positives according to our criteria but should still be useful as their proportions are very similar. Of course, this is assuming the dx and diabetes statuses have a significant correlation. Following the same logic, tx should be a better predictor - the difference in gh and tx proportions are minimal.
+Interestingly, the number of diagnoses outnumber the number of people with diabetes (dx). This is probably due to the presence of pre-DM diagnoses in the dx feature. Pre-diabetes has a lower gh threshold and should explain the mismatch diabetic individuals (based on gh) and individuals in dx. 
 
-At this point I'm unsure if the other features are as valuable, we would have to look for correlations with diabetes to determine this.
+Out of curiosity I checked the number of pre-diabetics within the dataset. 
 
-We move on to correlation visualizations to investigate if any features are correlated with diabetes. 
+```{r}
+# Prepare dataframe for plotting venn diagram.
+pDM_or_DM_venn <- categorical_df %>%
+  select(dx, gh) %>%
+  
+  # Filter for row sums >= 1 to exclude individuals who are not in either category. (Not diabetic, not preDM)
+  filter(rowSums(.) >= 1) %>%
+  
+  # Transform into T/F for venn diagram plotting.
+  mutate(dx = as.logical(dx),
+         gh = as.logical(gh)) %>%
+  rename('preDM or DM' = dx,
+         'DM' = gh)
+
+
+# Plot the venn diagram.
+ggvenn(pDM_or_DM_venn, c('preDM or DM', 'DM'))
+
+
+# The individual's diabetes status is more clearly illustrated below.
+ 
+# dx = 0, gh = 0 -> no preDM or DM
+# dx = 1, gh = 1 -> DM
+# dx = 1, gh = 0 -> preDM
+# dx = 0, gh = 1 -> DM
+
+```
+
+About half of individuals marked with preDM or DM through the dx feature is preDM. There is a tradeoff in using dx as a feature for the model. I believe it would give the model a higher sensitivity score, where it is more adept at picking out diabetics from the overall population, but its precision score may falter as some false-positives will be picked out.
+
+At this point I'm unsure if the other features are as valuable, we would have to look for correlations with diabetes to determine this and we need to check if features are correlation to other features as well.
 
 ```{r}
 # Load data.
@@ -224,7 +257,20 @@ pair_graphs
 ```
 The light blue refers to diabetic patients, while dark blue refers to non-diabetic patients. Unfortunately, there is no discernable relationship between gh and any of the variables. In the age vs gh graph, it appears the threshold for diabetes has somehow dropped, but this is likely due to overplotting. In all other graphs with age as the x-axis, the diabetic population seems to form towards the right of the graph. A possible method to make the dataset balanced would be to filter for older individuals. 
 
-There were positive relationships between anthropometric variables such as ht and leg, wt and bmi but these are not very helpful. 
+Another method of visualizing correlations is through construction of a correlation matrix, and plotting the results through a heatmap.
+
+```{r}
+# Produce a correlation matrix from a dataframe (pearson's correlation coefficient)
+cont_heatmap <- cor(continuous_df)
+
+# Plot the heatmap
+pheatmap(cont_heatmap,
+         display_numbers = T)
+
+```
+There were positive relationships between anthropometric variables such as (ht and leg), (wt, bmi, waist, armc and sub). It would be wise to select a feature that would represent the values that are correlated to one another, as they bring the same information to the model. In terms of correlation with the gh variable, only age, waist, bmi and sub had weak notable Pearson's correlation coefficients of >0.2. Further, albumin had a weakly negative correlation with diabetes, with a value of -0.21. 
+
+We take a closer look at the different continuous features and plot them against gh to examine their distributions.
 
 ```{r}
 # Plot all continous variables against gh.
@@ -239,7 +285,7 @@ for (i in colnames(continuous_df)) {
 Taking a closer look at the graph of features against gh reveals that age, bmi, armc, waist may be good predictors of diabetes, since the diabetics are always concentrated along a certain region of the x-axis. Apart from looking purely at graphs we can do a t-test between the means of different features, in diabetics and non-diabetics to check for significance. This will be done with a two-sample test with significance level at p = 0.05.
 
 ```{r}
-# Open a new list for result collection
+# Initialize a new list for result collection.
 t_test_df <- list()
 
 # For all continuous variables except the diabetes columns, do a t-test of means between diabetics and non-diabetics. 
@@ -270,7 +316,7 @@ t_test_df
 ```
 The t-test shows p-values in comparisons of feature means between diabetics and non-diabetics. If we were to select for features, we would pick from the top, with the lowest p-value and move downwards.
 
-I will do the same with categorical variables, using the chi-squared test of independence. 
+I will do the same with categorical variables, using the chi-squared test of independence. In addition, Cramer's V will be calculated to measure the strength of the association.
 
 ```{r}
 # Obtain categorical variables and gh.
@@ -289,43 +335,41 @@ for (i in colnames(categorical_df)[1:length(colnames(categorical_df)) - 1]) {
   
   # Construct contingency table, perform chi square test. 
   cont_table <- table(categorical_df[[i]], categorical_df$diabetes)
+  
   chi_squared_result <- chisq.test(cont_table)
+  
+  cramers_v_result <- assocstats(cont_table)
   
   # Store result in a list.
   entry <- list('col_name' = i,
                 'chi-sq_stat' = chi_squared_result$statistic,
-                'p_value' = chi_squared_result$p.value)
+                'p_value' = chi_squared_result$p.value,
+                'cramers_v' = cramers_v_result$cramer)
   
   chi_sq_df[[i]] <- entry
 }
 
+# R-bind all lists to form a dataframe.
 chi_sq_df <- rbindlist(chi_sq_df) %>%
   arrange(p_value) %>%
   mutate(significant = case_when(p_value < 0.05 ~ T,
                                  T ~ F))
 
 chi_sq_df
-
-
 ```
-As expected, there is a high correlation between tx, dx and diabetes. Since all the variables in this dataset are all somehow contributing to diabetes, there were significant differences between means of the continuous variables in diabetics and non-diabetics. All categorical variables were also correlated to diabetes. Feature selection is still important to reduce the dimensionality in data to create a more effective model. 
+All categorical variables had a significant association with diabetes. tx and dx had a Cramer's V value of 0.65 and 0.58 respectively, indicating that they were more strongly associated with diabetes compared to income, re and sex. 
 
-tx, dx, age (after removing below 20), bmi (since it tell us the most information about a person's body shape, and is also correlated with several other features.)
+Based on the observations gathered, feature selection will take place. All features in this dataset contribute to diabetes in some way. The best method of performing feature selection would probably be to rely on domain knowledge to filter for features (has already been done for this dataset, given that all features contribute to diabetes), before using wrapper methods to search for the best subset of features to use. Although reading through all the literature on diabetes ML models would enable me to make a better model, due to time scarcity, lack of computational power and inexperience with wrapper methods, I will select features based on information I gathered from this dataset. 
 
+The features: age, bmi, albumin, tx and dx will be used. Justification:
 
+  - Age has the highest Pearson's correlation coefficient value in contrast to all other features (heatmap). Diabetics were found to be concentrated past a certain age threshold (Age vs gh scatterplot). There difference between mean ages of diabetics and non-diabetics was 20 years, and was statistically significant (t-test). 
+  
+  - BMI has the 3rd highest Pearson's correlation coefficient value, behind waist (heatmap). BMI is used in favor of waist as it also describes height, while being highly correlated to waist as well (PCC = 0.9), making it a descriptor of body proportions. While not as extreme as age, the frequency of diabetics increases above a certain BMI threshold (bmi vs gh scatterplot). The difference in mean BMI between diabetics and non-diabetics is 4, this difference was also statistically significant (t-test). 
 
-
-
-
-
-
-
-
-
-
-
-
-
+  - Albumin is negatively correlated with gh, with a Pearson's correlation coefficient of -0.15 (heatmap). This negative relationship is not as strong as that of Age or BMI, but this feature offers information with regards to kidney function, which is not captured in other features. There was a significant difference in albumin levels between diabetics and non-diabetics (t-test), but whether this difference is biologically significant or not is a question for a physician. Nevertheless, I will use this feature in hopes of incorporating kidney function into the model.
+  
+  - tx and dx proportions closely mimicked that of diabetic individuals (pie charts). These features were associated with diabetics, and had higher Cramer's V values compared to other categorical variables. The presence of insulin/diabetes medicine (tx) should be a tell-tale sign of diabetes. For dx, while about half of them marked as preDM or DM are preDM, I believe it is better for the precision score of the model to suffer in favor of a higher sensitivity score to maximally capture all incidents of DM in the community. The false-positives incurred will likely be from the preDM population as well so there is minimal harm here. (Clinicians may disagree with me, depending on the treatment differences of preDM and DM.)
 
 
 
