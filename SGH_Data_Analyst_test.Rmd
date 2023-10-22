@@ -29,6 +29,15 @@ library(data.table)
 library(pheatmap)
 library(vcd)
 library(ggvenn)
+library(VIM)
+library(gridExtra)
+library(caTools)
+library(ROCR)
+library(pROC)
+library(caret)
+library(rpart)
+library(rpart.plot)
+
 
 # Setting global seed for reproducibility
 set.seed(777)
@@ -95,6 +104,8 @@ df <- dbGetQuery(conn, query)
 
 na_plot <- vis_miss(df)
 print(na_plot)
+
+aggr(df)
 ```
 A visual representation of NAs is preferable to looking at NA counts in the data dictionary. The majority of NAs come from the sub column, at 14% while other anthropometric columns range from 3-7% missingness. income and kidney damage-related columns also contain small amounts of NA. One solution is to drop all rows that have atleast one NA in them. We first need to count the number of rows that fit this criteria, and the amount of data that we'll lose.
 
@@ -239,20 +250,20 @@ At this point I'm unsure if the other features are as valuable, we would have to
 query <- 'SELECT age, wt, ht, bmi, leg, arml, armc, waist, tri, sub, gh, albumin, bun, SCr FROM diabetes_data'
 continuous_df <- dbGetQuery(conn, query)
 
-# Construct paired geom_point graphs with different features. 
+# Construct paired geom_point graphs with different features.
 continuous_df <- continuous_df %>%
   na.omit() %>%
   mutate(diabetes = case_when(gh >= 6.5 ~ 1,
                               T ~ 0))
 
 pair_graphs <- ggpairs(continuous_df, aes(col = diabetes),
-        progress = F, 
+        progress = F,
         lower = list(continuous = "points"),
         upper = list(continuous = "blank"),
         diag = list(continuous = "blankDiag"),
         axisLabels = 'none')
 
-pair_graphs
+# pair_graphs
 
 ```
 The light blue refers to diabetic patients, while dark blue refers to non-diabetic patients. Unfortunately, there is no discernable relationship between gh and any of the variables. In the age vs gh graph, it appears the threshold for diabetes has somehow dropped, but this is likely due to overplotting. In all other graphs with age as the x-axis, the diabetic population seems to form towards the right of the graph. A possible method to make the dataset balanced would be to filter for older individuals. 
@@ -370,6 +381,115 @@ The features: age, bmi, albumin, tx and dx will be used. Justification:
   - Albumin is negatively correlated with gh, with a Pearson's correlation coefficient of -0.15 (heatmap). This negative relationship is not as strong as that of Age or BMI, but this feature offers information with regards to kidney function, which is not captured in other features. There was a significant difference in albumin levels between diabetics and non-diabetics (t-test), but whether this difference is biologically significant or not is a question for a physician. Nevertheless, I will use this feature in hopes of incorporating kidney function into the model.
   
   - tx and dx proportions closely mimicked that of diabetic individuals (pie charts). These features were associated with diabetics, and had higher Cramer's V values compared to other categorical variables. The presence of insulin/diabetes medicine (tx) should be a tell-tale sign of diabetes. For dx, while about half of them marked as preDM or DM are preDM, I believe it is better for the precision score of the model to suffer in favor of a higher sensitivity score to maximally capture all incidents of DM in the community. The false-positives incurred will likely be from the preDM population as well so there is minimal harm here. (Clinicians may disagree with me, depending on the treatment differences of preDM and DM.)
+
+Next is mean imputation. The whole dataset will be used for KNN imputation so as to be more accurate, before selecting the relevant columns used for model building. KNN imputation is used, with Gower's distance as the distance metric and k = 5.
+
+```{r}
+# Load data.
+query <- 'SELECT * FROM diabetes_data'
+df <- dbGetQuery(conn, query)
+
+# Perform KNN imputation.
+after_impute_df <- df %>%
+  kNN(variable = 'albumin', 
+      k = 5) %>%
+  rename('albumin_imputed' = albumin_imp)
+
+# Plot new distribution.
+alb_after_plot <- ggplot(after_impute_df) +
+  geom_point(aes(x = albumin, y = gh, col = albumin_imputed))
+
+alb_after_plot
+
+print(paste('albumin NA values before imputation:', sum(is.na(df$albumin))))
+
+print(paste('albumin NA values after imputation:', sum(is.na(after_impute_df$albumin))))
+
+summary(df$albumin)
+
+summary(after_impute_df$albumin)
+
+after_impute_df <- after_impute_df %>%
+  select(age, bmi, albumin, tx, dx, gh) %>%
+  mutate(diabetes = case_when(gh >= 6.5 ~ 1,
+                              T ~ 0),
+         diabetes = as.factor(diabetes)) %>%
+  select(-gh)
+
+```
+A total of 89 values for albumin were imputed. Minimal differences could be seen in the albumin vector before and after imputation. Only the mean had decreased by 0.002. After imputation, the features age, bmi, albumin, tx and dx were used for modelling. 
+
+Logistic regression is a model used in classifying categorical variables like yes or no, 0 and 1. Linear regression is not suitable for this as the predicted value could be above 1 or below 0. In logistic regression, a sigmoidal curve is used to model the relationship between predictor variables and the probability of an event occurring. Both categorical and continuous predictors can be used for prediction. 
+
+
+```{r}
+# Split dataset in a 70:30 train:test ratio.
+split <- sample.split(after_impute_df, SplitRatio = 0.7)
+
+train_df <- subset(after_impute_df, split == T)
+test_df <- subset(after_impute_df, split == F)
+```
+
+
+```{r}
+# Build a logistic regression model.
+log_model <- glm(diabetes ~ .,
+                 data = train_df, 
+                 family = 'binomial')
+
+summary(log_model)
+
+exp(coef(log_model))
+
+```
+The coefficients estimated for each variable indicates the effect a 1 unit change has on the log odds ratio of the outcome we are trying to predict for, while holding all other variables constant. For example, for every 1 year increase in age, the log odds of being diabetic increases by 0.025. This value is more easily interpreted if we exponentiate them. This transforms the log odds to odds ratio, meaning that for every 1 year increase in age, the odds of becoming diabetic increases by 2.9%. 
+
+```{r}
+# Use model on test data.
+log_predictions <- predict(log_model, 
+        newdata = test_df,
+        type = 'response')
+
+# Transform such that values >0.5 = T, else = F.
+log_predictions <- ifelse(log_predictions > 0.5, 1, 0)
+
+# Make a ROCR prediction object to evaluate the model.
+ROCR_pred <- prediction(predictions = log_predictions,
+                        labels = test_df$diabetes)
+
+# Obtain accuracy, precision, recall and AUC.
+accuracy <- performance(ROCR_pred, measure = "acc")@y.values[[1]]
+precision <- performance(ROCR_pred, measure = "ppv")@y.values[[1]]
+recall <- performance(ROCR_pred, measure = "sens")@y.values[[1]]
+auc <- performance(ROCR_pred, measure = "sens")@y.values[[1]]
+
+
+
+# Perform k-fold cross validation.
+# tr_ctrl <- trainControl(method = 'cv', number = 5)
+# cv_model <- train(diabetes ~ ., data = train_df, method = "glm", family = "binomial", trControl = tr_ctrl)
+# 
+# 
+# cv_model
+```
+
+```{r}
+# Make a decision tree classifier.
+decision_tree <- rpart(diabetes ~ ., data = train_df, method = "class",
+                       minsplit = 2, minbucket = 1)
+
+rpart.plot(decision_tree)
+
+```
+
+
+
+
+
+
+
+
+
 
 
 
