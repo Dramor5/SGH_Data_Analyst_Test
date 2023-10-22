@@ -32,11 +32,11 @@ library(ggvenn)
 library(VIM)
 library(gridExtra)
 library(caTools)
-library(ROCR)
-library(pROC)
 library(caret)
 library(rpart)
 library(rpart.plot)
+library(randomForest)
+
 
 
 # Setting global seed for reproducibility
@@ -453,16 +453,11 @@ log_predictions <- predict(log_model,
 # Transform such that values >0.5 = T, else = F.
 log_predictions <- ifelse(log_predictions > 0.5, 1, 0)
 
-# Make a ROCR prediction object to evaluate the model.
-ROCR_pred <- prediction(predictions = log_predictions,
-                        labels = test_df$diabetes)
+log_predictions <- as.factor(log_predictions)
 
-# Obtain accuracy, precision, recall and AUC.
-accuracy <- performance(ROCR_pred, measure = "acc")@y.values[[1]]
-precision <- performance(ROCR_pred, measure = "ppv")@y.values[[1]]
-recall <- performance(ROCR_pred, measure = "sens")@y.values[[1]]
-auc <- performance(ROCR_pred, measure = "sens")@y.values[[1]]
 
+
+log_results <- confusionMatrix(log_predictions, test_df$diabetes, positive = '1')
 
 
 # Perform k-fold cross validation.
@@ -473,16 +468,46 @@ auc <- performance(ROCR_pred, measure = "sens")@y.values[[1]]
 # cv_model
 ```
 
+The decision tree will attempt to classify diabetics based on the 5 chosen variables. To determine the variable used to split the dataset, the Gini impurity, (a value which determines how good the split is, based on the amount of unique classes left in the child nodes) is calculated for each predictor variable. The lower the Gini impurity, the better the split. The data is then divided into the child nodes, and for each child node, the Gini impurity is calculated using the remaining variables, a variable is used for a split, and the dataset is divided until the terminal nodes have only one class remaining. 
+
 ```{r}
 # Make a decision tree classifier.
-decision_tree <- rpart(diabetes ~ ., data = train_df, method = "class",
-                       minsplit = 2, minbucket = 1)
+decision_tree <- rpart(diabetes~., data = train_df, method = "class")
 
+# Visualize the tree.
 rpart.plot(decision_tree)
 
+# Use the model to predict diabetic labels.
+decision_tree_predictions <- predict(decision_tree, newdata = test_df, type = 'class')
+
+tree_results <- confusionMatrix(decision_tree_predictions, test_df$diabetes, positive = '1')
+
+
 ```
+The initial tree only has the root node and one split. This means that it thinks the best variable for classifying the data is the tx variable. The current interpretation of this tree is: if tx = 0 is true, it means the patient is non-diabetic, while if tx = 0 is false, the patient is diabetic. 
 
+The tree is likely being pruned early to prevent overfitting (The model performs well on training data but performs poorly on test data). This happens when a more complicated tree is built, and only a small proportion of the dataset falls within one of the terminal leaf nodes. This gives us poor confidence in the model when doing classification on future datasets, and so the model has decided to use tx as the first and only split to determine if someone was diabetic.  
 
+The random forest model utilizes many decision trees and bootstrapping. Bootstrapping creates new datasets by selecting random rows from the original dataset. For each bootstrapped dataset, a decision tree is constructed. The decision tree's splits are made using the same methodology as the decision tree model, but only a limited subset of all variables are considered at each split. Multiple trees are constructed by repeating the process, and the test data set is passed through each tree before consensus voting occurs. The number of trees voting for each classification (diabetic / non-diabetic) are summed up and the classification with the higher vote count is used. 
+
+```{r}
+# Create random forest model.
+rf <- randomForest(diabetes~., data = train_df)
+
+# Use the model to make predictions on diabetic labels.
+rf_predictions <- predict(rf, test_df)
+
+rf_predictions <- as.factor(rf_predictions)
+
+rf_results <- confusionMatrix(rf_predictions, test_df$diabetes, positive = '1')
+
+log_results
+
+tree_results
+
+rf_results
+```
+We see that the OOB (out of bag) estimate of error is 5.92%, which means accuracy should be close to 94%. This value refers to the percent of errors encountered when samples that were not used to construct a particular tree were passed through the tree to check for its classification. 5.92% of the out of bag samples were classified incorrectly. 
 
 
 
