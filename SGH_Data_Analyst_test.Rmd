@@ -11,12 +11,9 @@ The objective of this assignment is to predict for diabetes (gh >= 6.5%). This w
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 
-# knitr::opts_knit$set(root.dir = 'C:/Users/Dramor/OneDrive - Nanyang Technological University/MIMIC-IV/mimic-iv-clinical-database-demo-2.2/icu')
-
 # Define a relative path to a file or directory
 relative_path <- file.path('Data', 'nhgh.tsv')
 image_path <- file.path('Images','data_dictionary.png')
-
 
 # Load packages
 library(tidyverse)
@@ -36,8 +33,6 @@ library(caret)
 library(rpart)
 library(rpart.plot)
 library(randomForest)
-
-
 
 # Setting global seed for reproducibility
 set.seed(777)
@@ -74,14 +69,15 @@ The rationale behind the usage of features provided will be explained below:
   albumin, bun, SCr: These are indicators of kidney function and damage. Elevated levels of albumin, blood urea nitrogen and creatinine are associated with kidney damage, and kidney damage is associated with uncontrolled diabetes.
 
 
-
-
-Despite being a small dataset, it will be transformed into a SQLite database to showcase SQL skills. I will try to do most manipulations in SQL to reduce the size of the dataframe (if necessary) before loading it into memory.
+Despite being a small dataset, it will be transformed into a SQLite database to showcase SQL skills. I will try to do most manipulations in SQL to reduce the size of the dataframe (if necessary) before loading it into memory. The dataset was checked for duplications before doing so.
 
 ```{r eval = TRUE, echo=TRUE}
 # Loading of data.
 df <- read_tsv(relative_path,
                show_col_types = FALSE)
+
+# Check for duplications in seqn.
+sum(duplicated(df$seqn))
 
 # Open a SQLite connection.
 conn <- dbConnect(RSQLite::SQLite(), dbname = 'diabetes.db')
@@ -96,16 +92,21 @@ dbWriteTable(conn,
              overwrite = TRUE)
 
 ```
+There were no seqn duplications, indicating that all individuals in the dataset were unique. Therefore the dataset is already in a tidy format (one observation = one row). It was subsequently loaded into a new table within the SQLite connection.
 
 ```{r eval = TRUE, echo=TRUE}
+
 # Analyze the whole dataset first.
 query <- 'SELECT * FROM diabetes_data'
 df <- dbGetQuery(conn, query)
 
+# Produce an NA plot.
 na_plot <- vis_miss(df)
 print(na_plot)
 
+# Look at unique combinations of missing data.
 aggr(df)
+
 ```
 A visual representation of NAs is preferable to looking at NA counts in the data dictionary. The majority of NAs come from the sub column, at 14% while other anthropometric columns range from 3-7% missingness. income and kidney damage-related columns also contain small amounts of NA. One solution is to drop all rows that have atleast one NA in them. We first need to count the number of rows that fit this criteria, and the amount of data that we'll lose.
 
@@ -130,9 +131,10 @@ print(paste('Percent data lost: ', round(row_count_no_NA/initial_row_count*100),
 21% of data will be lost if we were to take this approach. But after removal there would still be >5000 unique rows of patient data available. The amount of data required is specific to each problem and more complex problems or algorithms used would require more data. 
 My opinion is that >5000 rows of data is still sufficient to build a model for diabetes prediction, and the current dataset satisfies the rule of thumb where the number of data points should be at least 10x the number of features. 
 
-However, to further showcase my skills I will perform imputation using KNN. The idea is that NAs will be replaced with the mean value from the n nearest neighbors found in the training dataset. More exploratory data analysis will be done, and the results of imputation will be compared with the original exploratory data analysis.
+However, to further showcase my skills I will perform imputation using KNN. The idea is that NAs will be replaced with the mean value from the n nearest neighbors found in the training dataset. More exploratory data analysis will be done before this occurs.
 
-```{r eerfqwf, echo=TRUE}
+```{r echo=TRUE}
+
 # Obtain continuous variables.
 query <- 'SELECT age, wt, ht, bmi, leg, arml, armc, waist, tri, sub, gh, albumin, bun, SCr FROM diabetes_data'
 continuous_df <- dbGetQuery(conn, query)
@@ -153,7 +155,7 @@ summary(continuous_df)
 ```
 From the boxplots and summary table, there appears to be individuals aged below 20 in the dataset. Although more younger people are developing diabetes, people usually develop diabetes when they hit the age of 45 (https://www.cdc.gov/diabetes/basics/type2.html). Therefore, there would not be much of a point to include people who are too young in the dataset as it might introduce more noise. 
 
-An interesting observation is the subset of morbidly obese individuals in the dataset. This is described by the wt and bmi features, along with features describing body shape such as waist and armc. These individuals have measurements beyond the upper whiskers and would potentially be outliers, but after some googling these measurements are still within the realm of possibility. I suspect these individuals are also the ones with the abnormally high gh value, but more analysis will have to take place before that conclusion can be drawn.
+An interesting observation is the subset of morbidly obese individuals in the dataset. This is described by the wt and bmi features, along with features describing body shape such as waist and armc. These individuals have measurements beyond the upper whiskers and would potentially be outliers, but after some googling these measurements are still within the realm of possibility.
 
 This is the phase where I would determine if outliers are within reason. Human errors made during data entry can sometimes form outliers so a reality check, and sometimes consulting a clinician may be necessary. But apart from the presence of young individuals and the morbidly obese subset, there appears to be nothing strange here. 
 
@@ -169,7 +171,7 @@ categorical_df <- categorical_df %>%
   mutate(gh = case_when(gh >= 6.5 ~ 1,
                         T ~ c(0)))
 
-# Create bar plots 
+# Create bar plots.
 for (i in colnames(categorical_df)) {
   if (i == 'income') {
     p <- ggplot(categorical_df) +
@@ -207,7 +209,7 @@ for (i in unique(altered_pie_df$category)) {
   print(p)
 }
 ```
-The bar plots visually depict count values for comparison, but the pie charts are more useful when it comes to looking at proportion. Unfortunately the pie chart for income has too many categories, causing labels to overlap. 
+The bar plots depict count values for comparison, but the pie charts are more useful when it comes to looking at proportion. Unfortunately the pie chart for income has too many categories, causing labels to overlap. 
 
 Interestingly, the number of diagnoses outnumber the number of people with diabetes (dx). This is probably due to the presence of pre-DM diagnoses in the dx feature. Pre-diabetes has a lower gh threshold and should explain the mismatch diabetic individuals (based on gh) and individuals in dx. 
 
@@ -227,10 +229,8 @@ pDM_or_DM_venn <- categorical_df %>%
   rename('preDM or DM' = dx,
          'DM' = gh)
 
-
 # Plot the venn diagram.
 ggvenn(pDM_or_DM_venn, c('preDM or DM', 'DM'))
-
 
 # The individual's diabetes status is more clearly illustrated below.
  
@@ -246,35 +246,24 @@ About half of individuals marked with preDM or DM through the dx feature is preD
 At this point I'm unsure if the other features are as valuable, we would have to look for correlations with diabetes to determine this and we need to check if features are correlation to other features as well.
 
 ```{r}
-# Load data.
+# Load data with only continuous variables.
 query <- 'SELECT age, wt, ht, bmi, leg, arml, armc, waist, tri, sub, gh, albumin, bun, SCr FROM diabetes_data'
-continuous_df <- dbGetQuery(conn, query)
+continuous_df <- dbGetQuery(conn, query) 
 
-# Construct paired geom_point graphs with different features.
+# Remove NAs, add a categorical variable `diabetes` containing diabetic labels.
 continuous_df <- continuous_df %>%
   na.omit() %>%
   mutate(diabetes = case_when(gh >= 6.5 ~ 1,
                               T ~ 0))
 
-pair_graphs <- ggpairs(continuous_df, aes(col = diabetes),
-        progress = F,
-        lower = list(continuous = "points"),
-        upper = list(continuous = "blank"),
-        diag = list(continuous = "blankDiag"),
-        axisLabels = 'none')
-
-# pair_graphs
-
 ```
-The light blue refers to diabetic patients, while dark blue refers to non-diabetic patients. Unfortunately, there is no discernable relationship between gh and any of the variables. In the age vs gh graph, it appears the threshold for diabetes has somehow dropped, but this is likely due to overplotting. In all other graphs with age as the x-axis, the diabetic population seems to form towards the right of the graph. A possible method to make the dataset balanced would be to filter for older individuals. 
 
-Another method of visualizing correlations is through construction of a correlation matrix, and plotting the results through a heatmap.
+A method of visualizing correlations is through construction of a correlation matrix, and plotting the results through a heatmap.
 
 ```{r}
-# Produce a correlation matrix from a dataframe (pearson's correlation coefficient)
+# Produce a correlation matrix from a dataframe (Pearson's correlation coefficient).
 cont_heatmap <- cor(continuous_df)
 
-# Plot the heatmap
 pheatmap(cont_heatmap,
          display_numbers = T)
 
@@ -284,7 +273,7 @@ There were positive relationships between anthropometric variables such as (ht a
 We take a closer look at the different continuous features and plot them against gh to examine their distributions.
 
 ```{r}
-# Plot all continous variables against gh.
+# Plot all continuous variables against gh.
 for (i in colnames(continuous_df)) {
   p <- ggplot(continuous_df) +
     geom_point(aes_string(x = i, y = 'gh', col = 'diabetes')) + 
@@ -293,7 +282,7 @@ for (i in colnames(continuous_df)) {
 }
 ```
 
-Taking a closer look at the graph of features against gh reveals that age, bmi, armc, waist may be good predictors of diabetes, since the diabetics are always concentrated along a certain region of the x-axis. Apart from looking purely at graphs we can do a t-test between the means of different features, in diabetics and non-diabetics to check for significance. This will be done with a two-sample test with significance level at p = 0.05.
+The graph of features against gh reveals that age, bmi, armc, waist may be good predictors of diabetes, since the diabetics are always concentrated along a certain region of the x-axis. Apart from looking purely at graphs we can do a t-test between the means of different features, in diabetics and non-diabetics to check for significance. This will be done with a two-sample test with significance level at p = 0.05.
 
 ```{r}
 # Initialize a new list for result collection.
@@ -325,7 +314,7 @@ t_test_df <- rbindlist(t_test_df) %>%
 t_test_df
 
 ```
-The t-test shows p-values in comparisons of feature means between diabetics and non-diabetics. If we were to select for features, we would pick from the top, with the lowest p-value and move downwards.
+The t-test shows p-values in comparisons of feature means between diabetics and non-diabetics. There were significant differences between the all feature means of diabetics and non-diabetics. This can be combined with the results of the heatmap for feature selection.
 
 I will do the same with categorical variables, using the chi-squared test of independence. In addition, Cramer's V will be calculated to measure the strength of the association.
 
@@ -370,7 +359,7 @@ chi_sq_df
 ```
 All categorical variables had a significant association with diabetes. tx and dx had a Cramer's V value of 0.65 and 0.58 respectively, indicating that they were more strongly associated with diabetes compared to income, re and sex. 
 
-Based on the observations gathered, feature selection will take place. All features in this dataset contribute to diabetes in some way. The best method of performing feature selection would probably be to rely on domain knowledge to filter for features (has already been done for this dataset, given that all features contribute to diabetes), before using wrapper methods to search for the best subset of features to use. Although reading through all the literature on diabetes ML models would enable me to make a better model, due to time scarcity, lack of computational power and inexperience with wrapper methods, I will select features based on information I gathered from this dataset. 
+Based on the observations gathered, feature selection will take place. All features in this dataset contribute to diabetes in some way. The best method of performing feature selection would probably be to rely on domain knowledge to filter for features (has already been done for this dataset, given that all features contribute to diabetes), before using wrapper methods to search for the best subset of features to use. In addition, reading through all the literature on diabetes ML models would enable me to make a better model, due to time scarcity, lack of computational power and inexperience with wrapper methods, I will select features based on information I gathered from this dataset. 
 
 The features: age, bmi, albumin, tx and dx will be used. Justification:
 
@@ -380,14 +369,15 @@ The features: age, bmi, albumin, tx and dx will be used. Justification:
 
   - Albumin is negatively correlated with gh, with a Pearson's correlation coefficient of -0.15 (heatmap). This negative relationship is not as strong as that of Age or BMI, but this feature offers information with regards to kidney function, which is not captured in other features. There was a significant difference in albumin levels between diabetics and non-diabetics (t-test), but whether this difference is biologically significant or not is a question for a physician. Nevertheless, I will use this feature in hopes of incorporating kidney function into the model.
   
-  - tx and dx proportions closely mimicked that of diabetic individuals (pie charts). These features were associated with diabetics, and had higher Cramer's V values compared to other categorical variables. The presence of insulin/diabetes medicine (tx) should be a tell-tale sign of diabetes. For dx, while about half of them marked as preDM or DM are preDM, I believe it is better for the precision score of the model to suffer in favor of a higher sensitivity score to maximally capture all incidents of DM in the community. The false-positives incurred will likely be from the preDM population as well so there is minimal harm here. (Clinicians may disagree with me, depending on the treatment differences of preDM and DM.)
+  - tx and dx proportions closely mimicked that of diabetic individuals (pie charts). These features were associated with diabetics, and had higher Cramer's V values compared to other categorical variables(Chi-squared test of independence). The presence of insulin/diabetes medicine (tx) should be a tell-tale sign of diabetes. For dx, while about half of them marked as preDM or DM are preDM, I believe it is better for the precision score of the model to suffer in favor of a higher sensitivity score to maximally capture all incidents of DM in the community. The false-positives incurred will likely be from the preDM population as well so there is minimal harm here. (Clinicians may disagree with me, depending on the treatment differences of preDM and DM.)
 
-Next is mean imputation. The whole dataset will be used for KNN imputation so as to be more accurate, before selecting the relevant columns used for model building. KNN imputation is used, with Gower's distance as the distance metric and k = 5.
+Next is KNN imputation. The whole dataset will be used for KNN imputation so as to be more accurate, before selecting the relevant columns used for model building. KNN imputation is used, with Gower's distance as the distance metric and k = 5. Finally, individuals that are below the age of 20 will be removed, as the diabetes incidence is too low in this subset.
 
 ```{r}
 # Load data.
 query <- 'SELECT * FROM diabetes_data'
 df <- dbGetQuery(conn, query)
+dbDisconnect(conn) # SQL is no longer used after this. 
 
 # Perform KNN imputation.
 after_impute_df <- df %>%
@@ -416,29 +406,46 @@ after_impute_df <- after_impute_df %>%
          diabetes = as.factor(diabetes)) %>%
   select(-gh)
 
-```
-A total of 89 values for albumin were imputed. Minimal differences could be seen in the albumin vector before and after imputation. Only the mean had decreased by 0.002. After imputation, the features age, bmi, albumin, tx and dx were used for modelling. 
+# Count number of rows after imputation.
+print(paste('Total number of rows:', nrow(after_impute_df)))
 
-Logistic regression is a model used in classifying categorical variables like yes or no, 0 and 1. Linear regression is not suitable for this as the predicted value could be above 1 or below 0. In logistic regression, a sigmoidal curve is used to model the relationship between predictor variables and the probability of an event occurring. A logit function is used to transform the output to a value from 0 to 1, values above 0.5 will be classified as 1 while values below that will be classified as 0. Both categorical and continuous predictors can be used for prediction. 
+# Filter out individuals below the age of 20.
+after_impute_df_filtered <- after_impute_df %>%
+  filter(age > 20)
+
+# Count number of rows after filtration.
+print(paste('Total number of rows:', nrow(after_impute_df_filtered)))
+
+
+```
+A total of 89 values for albumin were imputed. Minimal differences could be seen in the albumin vector before and after imputation. Only the mean had decreased by 0.002. After imputation, the features age, bmi, albumin, tx and dx were used for modelling. There are a total of 5630 rows remaining after removing patients below the age of 20.
+
+# Construction of logistic regression model.
+
+Logistic regression is a model used in classifying categorical variables like yes or no, 0 and 1. Linear regression is not suitable for this as the predicted value could be above 1 or below 0. In logistic regression, a sigmoidal curve is used to model the relationship between predictor variables and the probability of an event occurring. A logit function is used to transform the output to a value from 0 to 1, values >=0.5 will be classified as 1 while values 0.5< will be classified as 0. Both categorical and continuous features can be used for prediction. 
 
 ```{r}
 # Split dataset in a 70:30 train:test ratio.
-split <- sample.split(after_impute_df, SplitRatio = 0.7)
+split <- sample.split(after_impute_df_filtered, SplitRatio = 0.7)
 
-train_df <- subset(after_impute_df, split == T)
-test_df <- subset(after_impute_df, split == F)
+train_df <- subset(after_impute_df_filtered, split == T)
+test_df <- subset(after_impute_df_filtered, split == F)
 ```
 
 
 ```{r}
 # Construct control variable for log regression model, for k-fold cross validation.
-log_control <- trainControl(method = 'cv', number = 5, savePredictions="all")
+log_control <- trainControl(method = 'cv', number = 10)
 
 # Build a logistic regression model.
 log_model <- train(diabetes ~ ., data = train_df, method = "glm", family = "binomial", trControl = log_control)
 
-summary(log_model)
+log_model
 
+```
+10-fold cross validation was performed when constructing the model. The training data was partitioned into 10 sets. In each set the data was further divided to a train:validation dataset in a 9:1 ratio. For each set, the model was trained using the train data and tested on the validation data. The accuracy of each model was recorded, and the final accuracy shown here is the average of all accuracies. This gives an estimate of the actual accuracy that will be observed when the model is used on real data.
+
+```{r}
 # Collect results of model's coefficients and exponentiated coefficients in a dataframe.
 coeffs <- rbind(
   log_model$finalModel$coefficients,
@@ -449,11 +456,8 @@ coeffs <- rbind(
   as.data.frame()
 
 coeffs
-
 ```
-
-
-The coefficients estimated for each variable indicates the effect a 1 unit change has on the log odds ratio of the outcome we are trying to predict for, while holding all other variables constant. For example, for every 1 year increase in age, the log odds of being diabetic increases by 0.025. This value is more easily interpreted if we exponentiate them. This transforms the log odds to odds ratio, meaning that for every 1 year increase in age, the odds of becoming diabetic increases by 2.9%. 
+The coefficients estimated for each variable indicates the effect a 1 unit change has on the log odds ratio of the outcome we are trying to predict for, while holding all other variables constant. For example, for every 1 year increase in age, the log odds of being diabetic increases by 0.023. This value is more easily interpreted if we exponentiate them. This transforms the log odds to odds ratio, meaning that for every 1 year increase in age, the odds of becoming diabetic increases by 2.4%. 
 
 ```{r}
 # Use model on test data.
@@ -462,17 +466,19 @@ log_predictions <- predict(log_model,
 
 log_results <- confusionMatrix(log_predictions, test_df$diabetes, positive = '1')
 
-
 ```
+
+# Construction of decision tree model.
 
 The decision tree will attempt to classify diabetics based on the 5 chosen variables. To determine the variable used to split the dataset, the Gini impurity, (a value which determines how good the split is, based on the amount of unique classes left in the child nodes) is calculated for each predictor variable. The lower the Gini impurity, the better the split. The data is then divided into the child nodes, and for each child node, the Gini impurity is calculated using the remaining variables, a variable is used for a split, and the dataset is divided until the terminal nodes have only one class remaining. 
 
 10-fold cross validation was used to optimize the complexity of the tree (cp). Smaller cp values give more complex trees with more branches. But could lead to overfitting. The cp value with the highest accuracy score was used to train the final model.
 
 ```{r}
+
 # Optimize cp value for decision trees.
 control <- trainControl(method = "repeatedcv", 
-                        number = 10, # number of folds
+                        number = 10,
                         search = "grid")
 
 decision_tree <- train(diabetes ~ ., data = train_df, 'rpart', trControl = control)
@@ -489,8 +495,6 @@ tree_results <- confusionMatrix(decision_tree_predictions,
                                 test_df$diabetes, 
                                 positive = '1')
 
-tree_results$byClass
-
 ```
 The initial tree only has the root node and one split. This means that it thinks the best variable for classifying the data is the tx variable. The current interpretation of this tree is: if tx = 0 is true, it means the patient is non-diabetic, while if tx = 0 is false, the patient is diabetic. 
 
@@ -500,22 +504,22 @@ It is possible to force the model to use more variables as splits by adjusting t
 
 ```{r}
 # Create and visualize a more complex tree. Use rpart to manually specify cp value
-decision_tree_low_cp <- rpart(diabetes ~ ., data = train_df, cp = 0.004)
+decision_tree_low_cp <- rpart(diabetes ~ ., data = train_df, cp = 0.0036)
 
 rpart.plot(decision_tree_low_cp)
 ```
 
-The second tree made with a lower cp value of 0.004 forced the model to use dx, which was deemed as the 2nd best variable to use as a split. This was not done by the original model as the leaf node from the initial split using tx was already pure, and one of the leaf nodes from the dx split contained a proportion of less than 1% of the dataset. Therefore overfitting would likely occur and only one split is used for this decision tree.
+The second tree made with a lower cp value of 0.0036 forced the model to use age, which was deemed as the 2nd best variable to use as a split. This was not done by the original model as the leaf node from the initial split using tx was already pure, and one of the leaf nodes from the age split contained only 1% of the dataset. There was no point of doing this as overfitting would likely occur and only one split was used for this decision tree.
 
-The random forest model utilizes many decision trees and bootstrapping. Bootstrapping creates new datasets by selecting random rows from the original dataset. For each bootstrapped dataset, a decision tree is constructed. The decision tree's splits are made using the same methodology as the decision tree model, but only a limited subset of all variables are considered at each split. Multiple trees are constructed by repeating the process, and the test data set is passed through each tree before consensus voting occurs. The number of trees voting for each classification (diabetic / non-diabetic) are summed up and the classification with the higher vote count is used. 
+# Construction of random forest model.
 
-A 10-fold cross-validation to optimize the number of variables randomly selected at each split (mtry). For every partition of the data, several values of mtry are tested, and the accuracy is logged. It continues doing this for all partition and averages out the accuracy values for each mtry value before picking the mtry that yields the highest accuracy and trains the final model using it.
+The random forest model utilizes many decision trees and bootstrapping. Bootstrapping creates new datasets by selecting random rows from the original dataset, with replacement. For each bootstrapped dataset, a decision tree is constructed. The decision tree's splits are made using the same methodology as the decision tree model, but only a limited subset of all variables are considered at each split. Multiple trees are constructed by repeating the process, and the test data set is passed through each tree before consensus voting occurs. The number of trees voting for each classification (diabetic / non-diabetic) are summed up and the classification with the higher vote count is used. 
+
+A 10-fold cross-validation to optimize the number of variables randomly selected at each split (mtry). For every partition of the data, several values of mtry are tested, and the accuracy is logged. It continues doing this for all partition and averages out the accuracy values for each mtry value before picking the mtry that yields the highest accuracy. The final model is then trained using this mtry value.
 
 ```{r}
 # Create random forest model.
-# rf <- randomForest(diabetes~., data = train_df)
-
-rf <- train(diabetes~., 
+rf <- train(diabetes ~ ., 
             data = train_df,
             method = 'rf',
             trControl = control)
@@ -523,7 +527,10 @@ rf <- train(diabetes~.,
 rf
 
 # Take the mean of all error rates, multiply by 100.
-paste('Out of bag estimate of error rate:', round(mean(rf$finalModel$err.rate[,1]), 2))
+paste('Out of bag estimate of error rate:', 
+      round(mean(rf$finalModel$err.rate[,1]), 2)*100, 
+      '%', 
+      sep = ' ')
 
 # Use the model to make predictions on diabetic labels.
 rf_predictions <- predict(rf, test_df)
@@ -531,60 +538,55 @@ rf_predictions <- predict(rf, test_df)
 rf_predictions <- as.factor(rf_predictions)
 
 rf_results <- confusionMatrix(rf_predictions, test_df$diabetes, positive = '1')
-
-log_results
-
-tree_results
-
-rf_results
 ```
-We see that the OOB (out of bag) estimate of error is 5.92%, which means accuracy should be close to 94%. This value refers to the percent of errors encountered when samples that were not used to construct a particular tree were passed through the tree to check for its classification. 5.92% of the out of bag samples were classified incorrectly. 
+An mtry value of 2 was used as it yielded the highest average accuracy during the cross-validation. We see that the OOB (out of bag) estimate of error is 7%, which means accuracy should be close to 93%. This value refers to the percent of errors encountered when samples that were not used to construct a particular tree were passed through the tree to check for its classification. It also gives an idea of what the accuracy would look like if the model was used on new data. 7% of the out of bag samples were classified incorrectly. 
 
 
+# Results.
 
+```{r}
+# Result compilation.
 
+# Bind all results into a dataframe.
+combined_results <- rbind(
+    'Logistic regression' = unlist(log_results),
+    'Decision tree' = unlist(tree_results),
+    'Random forest' = unlist(rf_results)
+  ) %>%
+  as.data.frame() %>%
+  
+  # Remove all column prefixes.
+  # ^[^.]+ From the start of the string, detect any number of characters that is not a full stop.
+  # \\. Match a fullstop (\\ is used to escape the fullstop).
+  rename_all( ~ gsub("^[^.]+\\.", "", .)) %>%
+  
+  # Select relevant columns.
+  select(Accuracy,
+         Sensitivity,
+         Specificity,
+         Precision,
+         `Neg Pred Value`,
+         F1) %>%
+  
+  # Convert values from character to float (double), round to 4 digits after decimal points.
+  mutate_all(as.double) %>%
+  round(., 4)
 
-The out-of-bag (oob) error estimate
-In random forests, there is no need for cross-validation or a separate test set to get an unbiased estimate of the test set error. It is estimated internally, during the run, as follows:
-
-Each tree is constructed using a different bootstrap sample from the original data. About one-third of the cases are left out of the bootstrap sample and not used in the construction of the kth tree.
-
-Put each case left out in the construction of the kth tree down the kth tree to get a classification. In this way, a test set classification is obtained for each case in about one-third of the trees. At the end of the run, take j to be the class that got most of the votes every time case n was oob. The proportion of times that j is not equal to the true class of n averaged over all cases is the oob error estimate. This has proven to be unbiased in many tests. (https://www.stat.berkeley.edu/~breiman/RandomForests/cc_home.htm#ooberr)
-
-
-negative predictive value high and positive predictive value is kinda low - because we have too many non-diabetics in the dataset.
-
-
-
-
-```{r eval=FALSE, include=FALSE}
-# Create a copy of the table for my own modifications.
-query <- "CREATE TABLE diabetes_data_modified AS SELECT * FROM diabetes_data"
-dbExecute(conn, query)
-
-# Remove BMI column in copied table.
-query <- "ALTER TABLE diabetes_data_modified DROP COLUMN bmi;"
-dbExecute(conn, query)
-
-
-### Check cols
-# query <- "PRAGMA table_info(diabetes_data_modified);"
-# column_info <- dbGetQuery(conn, query)
-# print(column_info)
-###
-
-
-
-# List all tables in the database
-tables <- dbListTables(conn)
-
-# Print the list of tables
-cat("Tables in the database:\n")
-cat(tables, sep = "\n")
+combined_results
 
 ```
 
+All models performed similarly to one another based on the 6 metrics. They had accuracies of >92%. This metric is easy to understand, the models had performed the classification correctly in 92% of the individuals. There is large difference between the sensitivity (recall) and specificity metrics. All models had a sensitivity of ~65% and a specificity of ~96%. This means the models are all good at identifying true negative cases, but fare poorly when identifying true positive cases. 
 
+This is not unexpected as raising one would cause the other to decrease, if sensitivity were to increase, thereby improving the model's ability to detect for true positive cases, the number of false positives would increase and specificity would decrease. A better explanation would be that the threshold for classifying something as a positive is reduced to capture all positives, but in doing so people who are truly negative will also get classified as positive, leading to more false positives. In the current scenario, the threshold for a positive classification is very high, so while the model is better at identifying true negatives, there is a higher chance of classifying truly positive people as negative (false negative).
 
+Precision and negative predictive value (false discovery rate) have a similar relationship to that of sensitivity and specificity, which is probably due to the imbalanced dataset as well.
 
+I believe this is due to the dataset being imbalanced, as only 9.24% of the dataset is diabetic, while the rest are not diabetic. This could have allowed the models to learn the characteristics of non-diabetics more accurately than those of diabetics, leading to high specificity. 
+
+Overall I would say the random forest model is the best in this case. It has the highest accuracy and precision scores and the second highest F1 score. I suspect the random forest would also perform better on new data as the model uses a number of randomly constructed decision trees as opposed to the use of a single decision tree, which should allow for more robust predictions.
+
+One possible improvement is to form a new dataset using equal numbers of diabetic and non-diabetic individuals. This can be done through random sampling of the non-diabetic subset until it matches the total number of diabetic patients, the weights of non-diabetic individuals can then be raised by a factor of 10 (because diabetics make up about 10% of the dataset) to account for the differences in number of individuals. Of course, this would also mean the overall dataset becomes a lot smaller. 
+
+In addition, further optimization could be performed by adjusting hyperparameters for all models, in the decision tree and random forests, I used k-fold cross validation to optimize the cp and mtry values. There are many more hyperparameters that can be adjusted but I am not confident in my knowledge in them. It is possible to produce better models by trying different combinations of hyperparameters, but tinkering with something that I don't fully understand is unwise, hence I did not do this. 
 
