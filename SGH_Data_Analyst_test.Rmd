@@ -33,6 +33,7 @@ library(caret)
 library(rpart)
 library(rpart.plot)
 library(randomForest)
+library(gt)
 
 # Setting global seed for reproducibility
 set.seed(777)
@@ -42,13 +43,16 @@ set.seed(777)
 
 ![Data dictionary](`r image_path`)
 
+
+# **Introduction**
+
 There are two forms of diabetes - Type I and Type II. Type I is often due to genetic issues that causes the pancreas to stop producing insulin. Type II is more common worldwide, and is characterized by the downregulated production of insulin or cells in the body become unresponsive to insulin. Both lead to the inability of cells to uptake glucose, resulting in high glucose concentrations in the blood.
 
 The exact mechanistic cause has Type II diabetes has yet to be pinned down. Despite this, it is associated with factors such as diet, obesity, age, genetics, and sex. By looking at these features of an individual, a machine-learning model may be constructed to predict if someone has Type II diabetes. 
 
-The rationale behind the usage of features provided will be explained below:
+The relationship between the given features and diabetes is shown below:
 
-  sex, age: Known to be associated with Type II diabetes, both will be used.
+  sex, age: Known to be associated with Type II diabetes.
   
   re: Genetic factors differ greatly between individuals of different ethnicities. Although not a substitute for diabetes-associated genes, this feature should provide some information to distinguish affected and non-affected individuals.
   
@@ -56,22 +60,21 @@ The rationale behind the usage of features provided will be explained below:
   
   tx, dx: The inclusion of these features in this dataset is interesting. The presence of medication or a diagnosis related to diabetes should be the strongest predictor for Type II diabetes. 
   
-  wt, ht, bmi: bmi already takes into account both the weight and height features, but there could be a relationship between height and other anthropometric data below. bmi will be excluded while wt and ht will be used. 
+  wt, ht, bmi: bmi already takes into account both the weight and height features, but there could be a relationship between height and other anthropometric data below.
   
-  leg, arml: Studies were performed in the past to suggest that limb measurements could play a role in diabetes prediction. Limb lengths are indicators of an individual's diet during childhood and limb to body proportions could have effects on diabetes susceptibility. (https://www.cambridge.org/core/services/aop-cambridge-core/content/view/F48929D1213F5C8457CF8BF599F62047/S1368980022001215a.pdf/upper_arm_length_and_knee_height_are_associated_with_diabetes_in_the_middleaged_and_elderly_evidence_from_the_china_health_and_retirement_longitudinal_study.pdf)
+  leg, arml: Studies were performed in the past to suggest that limb measurements could play a role in diabetes prediction. Limb lengths are indicators of an individual's diet during childhood and limb to body proportions could have effects on diabetes susceptibility.
   
-  armc, waist, tri, sub: anthropometric data can be used to determine body shapes and proportions. There is literature on all of these features and their association with Type II diabetes. All will be used. 
-  
-  Some studies have reported that waist-to-height ratio is a strong predictor for diabetes. (https://bmcpublichealth.biomedcentral.com/articles/10.1186/s12889-019-7801-2#:~:text=Anthropometric%20measures%20including%20waist%20circumference,risk%20of%20diabetes%20and%20hypertension.) Subscapular skinfold was also found to be associated with Type II diabetes in a Peruvian population. (https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6960014/)
+  armc, waist, tri, sub: Anthropometric data can be used to determine body shapes and proportions. There is literature on all of these features and their association with Type II diabetes. 
   
   gh: Glycohaemoglobin is a clinical marker for blood glucose levels. This what we are predicting for, and will be transformed to a categorical variable such that gh >= 6.5% is 1 while gh < 6.5%  is 0.
   
   albumin, bun, SCr: These are indicators of kidney function and damage. Elevated levels of albumin, blood urea nitrogen and creatinine are associated with kidney damage, and kidney damage is associated with uncontrolled diabetes.
 
+# **Loading of data**
 
 Despite being a small dataset, it will be transformed into a SQLite database to showcase SQL skills. I will try to do most manipulations in SQL to reduce the size of the dataframe (if necessary) before loading it into memory. The dataset was checked for duplications before doing so.
 
-```{r eval = TRUE, echo=TRUE}
+```{r}
 # Loading of data.
 df <- read_tsv(relative_path,
                show_col_types = FALSE)
@@ -94,7 +97,9 @@ dbWriteTable(conn,
 ```
 There were no seqn duplications, indicating that all individuals in the dataset were unique. Therefore the dataset is already in a tidy format (one observation = one row). It was subsequently loaded into a new table within the SQLite connection.
 
-```{r eval = TRUE, echo=TRUE}
+# **Exploratory data analysis**
+
+```{r}
 
 # Analyze the whole dataset first.
 query <- 'SELECT * FROM diabetes_data'
@@ -108,9 +113,10 @@ print(na_plot)
 aggr(df)
 
 ```
+
 A visual representation of NAs is preferable to looking at NA counts in the data dictionary. The majority of NAs come from the sub column, at 14% while other anthropometric columns range from 3-7% missingness. income and kidney damage-related columns also contain small amounts of NA. One solution is to drop all rows that have atleast one NA in them. We first need to count the number of rows that fit this criteria, and the amount of data that we'll lose.
 
-```{r eval = TRUE, echo=TRUE}
+```{r}
 # Count the number of entries.
 query <- "SELECT COUNT(*) FROM diabetes_data"
 
@@ -131,9 +137,9 @@ print(paste('Percent data lost: ', round(row_count_no_NA/initial_row_count*100),
 21% of data will be lost if we were to take this approach. But after removal there would still be >5000 unique rows of patient data available. The amount of data required is specific to each problem and more complex problems or algorithms used would require more data. 
 My opinion is that >5000 rows of data is still sufficient to build a model for diabetes prediction, and the current dataset satisfies the rule of thumb where the number of data points should be at least 10x the number of features. 
 
-However, to further showcase my skills I will perform imputation using KNN. The idea is that NAs will be replaced with the mean value from the n nearest neighbors found in the training dataset. More exploratory data analysis will be done before this occurs.
+However, to further showcase my skills I will perform imputation using KNN. The idea is that NAs will be replaced with the mean value from a specified number of nearest neighbors found in the training dataset. More exploratory data analysis will be done before this occurs.
 
-```{r echo=TRUE}
+```{r}
 
 # Obtain continuous variables.
 query <- 'SELECT age, wt, ht, bmi, leg, arml, armc, waist, tri, sub, gh, albumin, bun, SCr FROM diabetes_data'
@@ -209,6 +215,7 @@ for (i in unique(altered_pie_df$category)) {
   print(p)
 }
 ```
+
 The bar plots depict count values for comparison, but the pie charts are more useful when it comes to looking at proportion. Unfortunately the pie chart for income has too many categories, causing labels to overlap. 
 
 Interestingly, the number of diagnoses outnumber the number of people with diabetes (dx). This is probably due to the presence of pre-DM diagnoses in the dx feature. Pre-diabetes has a lower gh threshold and should explain the mismatch diabetic individuals (based on gh) and individuals in dx. 
@@ -268,6 +275,7 @@ pheatmap(cont_heatmap,
          display_numbers = T)
 
 ```
+
 There were positive relationships between anthropometric variables such as (ht and leg), (wt, bmi, waist, armc and sub). It would be wise to select a feature that would represent the values that are correlated to one another, as they bring the same information to the model. In terms of correlation with the gh variable, only age, waist, bmi and sub had weak notable Pearson's correlation coefficients of >0.2. Further, albumin had a weakly negative correlation with diabetes, with a value of -0.21. 
 
 We take a closer look at the different continuous features and plot them against gh to examine their distributions.
@@ -316,7 +324,7 @@ t_test_df
 ```
 The t-test shows p-values in comparisons of feature means between diabetics and non-diabetics. There were significant differences between the all feature means of diabetics and non-diabetics. This can be combined with the results of the heatmap for feature selection.
 
-I will do the same with categorical variables, using the chi-squared test of independence. In addition, Cramer's V will be calculated to measure the strength of the association.
+The same will be done for the categorical features, using the chi-squared test of independence. In addition, Cramer's V will be calculated to measure the strength of the association.
 
 ```{r}
 # Obtain categorical variables and gh.
@@ -359,19 +367,23 @@ chi_sq_df
 ```
 All categorical variables had a significant association with diabetes. tx and dx had a Cramer's V value of 0.65 and 0.58 respectively, indicating that they were more strongly associated with diabetes compared to income, re and sex. 
 
-Based on the observations gathered, feature selection will take place. All features in this dataset contribute to diabetes in some way. The best method of performing feature selection would probably be to rely on domain knowledge to filter for features (has already been done for this dataset, given that all features contribute to diabetes), before using wrapper methods to search for the best subset of features to use. In addition, reading through all the literature on diabetes ML models would enable me to make a better model, due to time scarcity, lack of computational power and inexperience with wrapper methods, I will select features based on information I gathered from this dataset. 
+# **Feature selection**
+
+Based on the observations gathered, feature selection will take place. All features in this dataset contribute to diabetes in some way. The best method of performing feature selection would probably be to rely on domain knowledge to filter for features (has already been done for this dataset, given that all features contribute to diabetes), before using wrapper methods to search for the best subset of features to use. In addition, reading through all the literature on diabetes ML models would enable me to make a better model, but due to time scarcity, lack of computational power and inexperience with wrapper methods, I will select features based on information I gathered from this dataset. 
 
 The features: age, bmi, albumin, tx and dx will be used. Justification:
 
-  - Age has the highest Pearson's correlation coefficient value in contrast to all other features (heatmap). Diabetics were found to be concentrated past a certain age threshold (Age vs gh scatterplot). There difference between mean ages of diabetics and non-diabetics was 20 years, and was statistically significant (t-test). 
+  - Age has the highest Pearson's correlation coefficient value in contrast to all other features (heatmap). Diabetics were found to be concentrated past a certain age threshold (Age vs gh scatterplot). The difference between mean ages of diabetics and non-diabetics was 20 years, and was statistically significant (t-test). 
   
   - BMI has the 3rd highest Pearson's correlation coefficient value, behind waist (heatmap). BMI is used in favor of waist as it also describes height, while being highly correlated to waist as well (PCC = 0.9), making it a descriptor of body proportions. While not as extreme as age, the frequency of diabetics increases above a certain BMI threshold (bmi vs gh scatterplot). The difference in mean BMI between diabetics and non-diabetics is 4, this difference was also statistically significant (t-test). 
 
   - Albumin is negatively correlated with gh, with a Pearson's correlation coefficient of -0.15 (heatmap). This negative relationship is not as strong as that of Age or BMI, but this feature offers information with regards to kidney function, which is not captured in other features. There was a significant difference in albumin levels between diabetics and non-diabetics (t-test), but whether this difference is biologically significant or not is a question for a physician. Nevertheless, I will use this feature in hopes of incorporating kidney function into the model.
   
-  - tx and dx proportions closely mimicked that of diabetic individuals (pie charts). These features were associated with diabetics, and had higher Cramer's V values compared to other categorical variables(Chi-squared test of independence). The presence of insulin/diabetes medicine (tx) should be a tell-tale sign of diabetes. For dx, while about half of them marked as preDM or DM are preDM, I believe it is better for the precision score of the model to suffer in favor of a higher sensitivity score to maximally capture all incidents of DM in the community. The false-positives incurred will likely be from the preDM population as well so there is minimal harm here. (Clinicians may disagree with me, depending on the treatment differences of preDM and DM.)
+  - tx and dx proportions closely mimicked that of diabetic individuals (pie charts). These features were associated with diabetics, and had higher Cramer's V values compared to other categorical variables (Chi-squared test of independence). The presence of insulin/diabetes medicine (tx) should be a tell-tale sign of diabetes. For dx, while about half of them marked as preDM or DM are preDM, I believe it is better for the precision score of the model to suffer in favor of a higher sensitivity score to maximally capture all incidents of DM in the community. The false-positives incurred will likely be from the preDM population as well so there is minimal harm here. (Clinicians may disagree with me, depending on the treatment differences of preDM and DM.)
+  
+# **KNN imputation**
 
-Next is KNN imputation. The whole dataset will be used for KNN imputation so as to be more accurate, before selecting the relevant columns used for model building. KNN imputation is used, with Gower's distance as the distance metric and k = 5. Finally, individuals that are below the age of 20 will be removed, as the diabetes incidence is too low in this subset.
+KNN imputation is next. The whole dataset will be used for KNN imputation so as to be more accurate, before selecting the relevant columns used for model building. KNN imputation is used, with Gower's distance as the distance metric and k = 5. Finally, individuals that are below the age of 20 will be removed, as the diabetes incidence is too low in this subset.
 
 ```{r}
 # Load data.
@@ -420,7 +432,10 @@ print(paste('Total number of rows:', nrow(after_impute_df_filtered)))
 ```
 A total of 89 values for albumin were imputed. Minimal differences could be seen in the albumin vector before and after imputation. Only the mean had decreased by 0.002. After imputation, the features age, bmi, albumin, tx and dx were used for modelling. There are a total of 5630 rows remaining after removing patients below the age of 20.
 
-# Construction of logistic regression model.
+
+# **Model construction**
+
+# Construction of logistic regression model
 
 Logistic regression is a model used in classifying categorical variables like yes or no, 0 and 1. Linear regression is not suitable for this as the predicted value could be above 1 or below 0. In logistic regression, a sigmoidal curve is used to model the relationship between predictor variables and the probability of an event occurring. A logit function is used to transform the output to a value from 0 to 1, values >=0.5 will be classified as 1 while values 0.5< will be classified as 0. Both categorical and continuous features can be used for prediction. 
 
@@ -468,7 +483,7 @@ log_results <- confusionMatrix(log_predictions, test_df$diabetes, positive = '1'
 
 ```
 
-# Construction of decision tree model.
+### Construction of decision tree model
 
 The decision tree will attempt to classify diabetics based on the 5 chosen variables. To determine the variable used to split the dataset, the Gini impurity, (a value which determines how good the split is, based on the amount of unique classes left in the child nodes) is calculated for each predictor variable. The lower the Gini impurity, the better the split. The data is then divided into the child nodes, and for each child node, the Gini impurity is calculated using the remaining variables, a variable is used for a split, and the dataset is divided until the terminal nodes have only one class remaining. 
 
@@ -496,7 +511,7 @@ tree_results <- confusionMatrix(decision_tree_predictions,
                                 positive = '1')
 
 ```
-The initial tree only has the root node and one split. This means that it thinks the best variable for classifying the data is the tx variable. The current interpretation of this tree is: if tx = 0 is true, it means the patient is non-diabetic, while if tx = 0 is false, the patient is diabetic. 
+The initial tree only has the root node and one split. The model thinks the best variable for classifying the data is the tx variable. The current interpretation of this tree is: if tx = 0 is true, it means the patient is non-diabetic, while if tx = 0 is false, the patient is diabetic. 
 
 The tree is likely being pruned early to prevent overfitting (The model performs well on training data but performs poorly on test data). This happens when a more complicated tree is built, and only a small proportion of the dataset falls within one of the leaf nodes. This gives us poor confidence in the model when doing classification on future datasets, and so the model has decided to use tx as the first and only split to determine if someone was diabetic.
 
@@ -511,7 +526,7 @@ rpart.plot(decision_tree_low_cp)
 
 The second tree made with a lower cp value of 0.0036 forced the model to use age, which was deemed as the 2nd best variable to use as a split. This was not done by the original model as the leaf node from the initial split using tx was already pure, and one of the leaf nodes from the age split contained only 1% of the dataset. There was no point of doing this as overfitting would likely occur and only one split was used for this decision tree.
 
-# Construction of random forest model.
+### Construction of random forest model
 
 The random forest model utilizes many decision trees and bootstrapping. Bootstrapping creates new datasets by selecting random rows from the original dataset, with replacement. For each bootstrapped dataset, a decision tree is constructed. The decision tree's splits are made using the same methodology as the decision tree model, but only a limited subset of all variables are considered at each split. Multiple trees are constructed by repeating the process, and the test data set is passed through each tree before consensus voting occurs. The number of trees voting for each classification (diabetic / non-diabetic) are summed up and the classification with the higher vote count is used. 
 
@@ -542,7 +557,7 @@ rf_results <- confusionMatrix(rf_predictions, test_df$diabetes, positive = '1')
 An mtry value of 2 was used as it yielded the highest average accuracy during the cross-validation. We see that the OOB (out of bag) estimate of error is 7%, which means accuracy should be close to 93%. This value refers to the percent of errors encountered when samples that were not used to construct a particular tree were passed through the tree to check for its classification. It also gives an idea of what the accuracy would look like if the model was used on new data. 7% of the out of bag samples were classified incorrectly. 
 
 
-# Results.
+# **Results**
 
 ```{r}
 # Result compilation.
@@ -570,7 +585,8 @@ combined_results <- rbind(
   
   # Convert values from character to float (double), round to 4 digits after decimal points.
   mutate_all(as.double) %>%
-  round(., 4)
+  round(., 4) %>%
+  gt()
 
 combined_results
 
