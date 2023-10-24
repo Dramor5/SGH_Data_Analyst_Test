@@ -419,8 +419,7 @@ after_impute_df <- after_impute_df %>%
 ```
 A total of 89 values for albumin were imputed. Minimal differences could be seen in the albumin vector before and after imputation. Only the mean had decreased by 0.002. After imputation, the features age, bmi, albumin, tx and dx were used for modelling. 
 
-Logistic regression is a model used in classifying categorical variables like yes or no, 0 and 1. Linear regression is not suitable for this as the predicted value could be above 1 or below 0. In logistic regression, a sigmoidal curve is used to model the relationship between predictor variables and the probability of an event occurring. Both categorical and continuous predictors can be used for prediction. 
-
+Logistic regression is a model used in classifying categorical variables like yes or no, 0 and 1. Linear regression is not suitable for this as the predicted value could be above 1 or below 0. In logistic regression, a sigmoidal curve is used to model the relationship between predictor variables and the probability of an event occurring. A logit function is used to transform the output to a value from 0 to 1, values above 0.5 will be classified as 1 while values below that will be classified as 0. Both categorical and continuous predictors can be used for prediction. 
 
 ```{r}
 # Split dataset in a 70:30 train:test ratio.
@@ -432,67 +431,99 @@ test_df <- subset(after_impute_df, split == F)
 
 
 ```{r}
+# Construct control variable for log regression model, for k-fold cross validation.
+log_control <- trainControl(method = 'cv', number = 5, savePredictions="all")
+
 # Build a logistic regression model.
-log_model <- glm(diabetes ~ .,
-                 data = train_df, 
-                 family = 'binomial')
+log_model <- train(diabetes ~ ., data = train_df, method = "glm", family = "binomial", trControl = log_control)
 
 summary(log_model)
 
-exp(coef(log_model))
+# Collect results of model's coefficients and exponentiated coefficients in a dataframe.
+coeffs <- rbind(
+  log_model$finalModel$coefficients,
+  exp(log_model$finalModel$coefficients)
+  ) %>% 
+  round(.,4) %>%
+  cbind(value = c('coefficient', 'exponentiated_coefficient')) %>%
+  as.data.frame()
+
+coeffs
 
 ```
+
+
 The coefficients estimated for each variable indicates the effect a 1 unit change has on the log odds ratio of the outcome we are trying to predict for, while holding all other variables constant. For example, for every 1 year increase in age, the log odds of being diabetic increases by 0.025. This value is more easily interpreted if we exponentiate them. This transforms the log odds to odds ratio, meaning that for every 1 year increase in age, the odds of becoming diabetic increases by 2.9%. 
 
 ```{r}
 # Use model on test data.
 log_predictions <- predict(log_model, 
-        newdata = test_df,
-        type = 'response')
-
-# Transform such that values >0.5 = T, else = F.
-log_predictions <- ifelse(log_predictions > 0.5, 1, 0)
-
-log_predictions <- as.factor(log_predictions)
-
-
+        newdata = test_df)
 
 log_results <- confusionMatrix(log_predictions, test_df$diabetes, positive = '1')
 
 
-# Perform k-fold cross validation.
-# tr_ctrl <- trainControl(method = 'cv', number = 5)
-# cv_model <- train(diabetes ~ ., data = train_df, method = "glm", family = "binomial", trControl = tr_ctrl)
-# 
-# 
-# cv_model
 ```
 
 The decision tree will attempt to classify diabetics based on the 5 chosen variables. To determine the variable used to split the dataset, the Gini impurity, (a value which determines how good the split is, based on the amount of unique classes left in the child nodes) is calculated for each predictor variable. The lower the Gini impurity, the better the split. The data is then divided into the child nodes, and for each child node, the Gini impurity is calculated using the remaining variables, a variable is used for a split, and the dataset is divided until the terminal nodes have only one class remaining. 
 
-```{r}
-# Make a decision tree classifier.
-decision_tree <- rpart(diabetes~., data = train_df, method = "class")
+10-fold cross validation was used to optimize the complexity of the tree (cp). Smaller cp values give more complex trees with more branches. But could lead to overfitting. The cp value with the highest accuracy score was used to train the final model.
 
-# Visualize the tree.
-rpart.plot(decision_tree)
+```{r}
+# Optimize cp value for decision trees.
+control <- trainControl(method = "repeatedcv", 
+                        number = 10, # number of folds
+                        search = "grid")
+
+decision_tree <- train(diabetes ~ ., data = train_df, 'rpart', trControl = control)
+
+decision_tree
+
+# Visualize the optimized model.
+rpart.plot(decision_tree$finalModel)
 
 # Use the model to predict diabetic labels.
-decision_tree_predictions <- predict(decision_tree, newdata = test_df, type = 'class')
+decision_tree_predictions <- predict(decision_tree, newdata = test_df)
 
-tree_results <- confusionMatrix(decision_tree_predictions, test_df$diabetes, positive = '1')
+tree_results <- confusionMatrix(decision_tree_predictions, 
+                                test_df$diabetes, 
+                                positive = '1')
 
+tree_results$byClass
 
 ```
 The initial tree only has the root node and one split. This means that it thinks the best variable for classifying the data is the tx variable. The current interpretation of this tree is: if tx = 0 is true, it means the patient is non-diabetic, while if tx = 0 is false, the patient is diabetic. 
 
-The tree is likely being pruned early to prevent overfitting (The model performs well on training data but performs poorly on test data). This happens when a more complicated tree is built, and only a small proportion of the dataset falls within one of the terminal leaf nodes. This gives us poor confidence in the model when doing classification on future datasets, and so the model has decided to use tx as the first and only split to determine if someone was diabetic.  
+The tree is likely being pruned early to prevent overfitting (The model performs well on training data but performs poorly on test data). This happens when a more complicated tree is built, and only a small proportion of the dataset falls within one of the leaf nodes. This gives us poor confidence in the model when doing classification on future datasets, and so the model has decided to use tx as the first and only split to determine if someone was diabetic.
+
+It is possible to force the model to use more variables as splits by adjusting the cp (complexity) argument of rpart(), so this was performed as well. 
+
+```{r}
+# Create and visualize a more complex tree. Use rpart to manually specify cp value
+decision_tree_low_cp <- rpart(diabetes ~ ., data = train_df, cp = 0.004)
+
+rpart.plot(decision_tree_low_cp)
+```
+
+The second tree made with a lower cp value of 0.004 forced the model to use dx, which was deemed as the 2nd best variable to use as a split. This was not done by the original model as the leaf node from the initial split using tx was already pure, and one of the leaf nodes from the dx split contained a proportion of less than 1% of the dataset. Therefore overfitting would likely occur and only one split is used for this decision tree.
 
 The random forest model utilizes many decision trees and bootstrapping. Bootstrapping creates new datasets by selecting random rows from the original dataset. For each bootstrapped dataset, a decision tree is constructed. The decision tree's splits are made using the same methodology as the decision tree model, but only a limited subset of all variables are considered at each split. Multiple trees are constructed by repeating the process, and the test data set is passed through each tree before consensus voting occurs. The number of trees voting for each classification (diabetic / non-diabetic) are summed up and the classification with the higher vote count is used. 
 
+A 10-fold cross-validation to optimize the number of variables randomly selected at each split (mtry). For every partition of the data, several values of mtry are tested, and the accuracy is logged. It continues doing this for all partition and averages out the accuracy values for each mtry value before picking the mtry that yields the highest accuracy and trains the final model using it.
+
 ```{r}
 # Create random forest model.
-rf <- randomForest(diabetes~., data = train_df)
+# rf <- randomForest(diabetes~., data = train_df)
+
+rf <- train(diabetes~., 
+            data = train_df,
+            method = 'rf',
+            trControl = control)
+
+rf
+
+# Take the mean of all error rates, multiply by 100.
+paste('Out of bag estimate of error rate:', round(mean(rf$finalModel$err.rate[,1]), 2))
 
 # Use the model to make predictions on diabetic labels.
 rf_predictions <- predict(rf, test_df)
@@ -513,7 +544,15 @@ We see that the OOB (out of bag) estimate of error is 5.92%, which means accurac
 
 
 
+The out-of-bag (oob) error estimate
+In random forests, there is no need for cross-validation or a separate test set to get an unbiased estimate of the test set error. It is estimated internally, during the run, as follows:
 
+Each tree is constructed using a different bootstrap sample from the original data. About one-third of the cases are left out of the bootstrap sample and not used in the construction of the kth tree.
+
+Put each case left out in the construction of the kth tree down the kth tree to get a classification. In this way, a test set classification is obtained for each case in about one-third of the trees. At the end of the run, take j to be the class that got most of the votes every time case n was oob. The proportion of times that j is not equal to the true class of n averaged over all cases is the oob error estimate. This has proven to be unbiased in many tests. (https://www.stat.berkeley.edu/~breiman/RandomForests/cc_home.htm#ooberr)
+
+
+negative predictive value high and positive predictive value is kinda low - because we have too many non-diabetics in the dataset.
 
 
 
